@@ -1,0 +1,84 @@
+{
+  "version": "2.4.0",
+  "lastSync": "2026-10-12T12:20:00.000Z",
+  "userProfile": {
+    "name": "Desarrollador Principal",
+    "level": "principal",
+    "primaryLanguages": ["TypeScript", "Python", "C++", "Rust", "SQL"],
+    "hardwareProfile": "Escritorio con GPU / VRAM optimizada & modo API híbrido"
+  },
+  "promptConfig": {
+    "chainOfThought": true,
+    "negativeConstraints": true,
+    "reflexionSelfCorrection": true,
+    "seniorExpertMode": true,
+    "preferredStack": "Node.js, TypeScript, React, Python, Web Audio, Three.js/Canvas, Tailwind",
+    "rolePersona": "Arquitecto Principal de Software e Ingeniería Inversa (GLaDOS PRO)"
+  },
+  "insights": [
+    {
+      "id": "mem-001",
+      "category": "architecture",
+      "title": "Memoria Persistente contra Ausencia de Aprendizaje Continuo",
+      "detail": "Dado que los pesos neuronales de los LLMs no cambian tras cada sesión, este archivo glados_persistent_memory.json actúa como cerebro externo persistente inyectado en cada llamada para mantener el hilo conductor sin pérdida de contexto.",
+      "tags": ["memoria", "persistencia", "in-context-learning", "rag"],
+      "confidence": 100,
+      "createdAt": "2026-10-12T12:00:00Z",
+      "updatedAt": "2026-10-12T12:00:00Z"
+    },
+    {
+      "id": "mem-002",
+      "category": "constraint",
+      "title": "Restricciones Negativas Explícitas para Máxima Calidad",
+      "detail": "Prohibido el uso de placeholders ('// agregar logica'), prohibido el uso de tipos 'any' sueltos, prohibido omitir bloques try/catch y evitar dependencias obsoletas.",
+      "tags": ["restricciones", "calidad", "typescript", "clean-code"],
+      "confidence": 98,
+      "createdAt": "2026-10-12T12:00:00Z",
+      "updatedAt": "2026-10-12T12:00:00Z"
+    },
+    {
+      "id": "mem-003",
+      "category": "solution",
+      "title": "Chain-of-Thought & Reflexion para Eliminar Alucinaciones",
+      "detail": "Exigir que la IA desglose el diagnóstico y flujo de datos antes de programar reduce errores en un 85%. Aplicar reflexión crítica detecta fugas de memoria y condiciones de carrera.",
+      "tags": ["cot", "reflexion", "alucinacion", "diagnostico"],
+      "confidence": 96,
+      "createdAt": "2026-10-12T12:00:00Z",
+      "updatedAt": "2026-10-12T12:00:00Z"
+    },
+    {
+      "id": "mem-004",
+      "category": "learning",
+      "title": "Entorno Acotado MCP y Seguridad en Disco",
+      "detail": "Las herramientas del sistema de archivos (scan_folder, read_binary_nif, generate_cad_dxf, analyze_code_doctor) sólo se ejecutan con evidencia explícita bajo confirmación estructurada, nunca de forma silenciosa ni arbitraria.",
+      "tags": ["mcp", "seguridad", "herramientas", "filesystem"],
+      "confidence": 99,
+      "createdAt": "2026-10-12T12:00:00Z",
+      "updatedAt": "2026-10-12T12:00:00Z"
+    },
+    {
+      "id": "mem-005",
+      "category": "solution",
+      "title": "Prevención de Fugas de Memoria en Web Sockets y Listeners",
+      "detail": "Siempre retornar función de limpieza en useEffect con removeEventListener y ws.close(), usando useRef para guardar la instancia activa.",
+      "tags": ["react", "websockets", "memory-leak"],
+      "confidence": 95,
+      "createdAt": "2026-10-12T12:00:00Z",
+      "updatedAt": "2026-10-12T12:00:00Z"
+    }
+  ],
+  "recentLearnings": [
+    "Arquitectura modular con 3 pestañas por prompt en Estudio Multimedia (Imágenes, Video y Música)",
+    "Chat General con soporte dual: IA Universal para dudas complejas + Orquestador MCP para disco",
+    "Inyección de memoria persistente en el System Prompt para retener historial y preferencias"
+  ],
+  "activeContextThread": {
+    "currentObjective": "Maximizar el rendimiento de la IA mitigando limitaciones mediante memoria persistente y Prompt Engineering avanzado.",
+    "unresolvedDoubts": [],
+    "provenSolutions": [
+      "Almacenamiento de memoria en glados_persistent_memory.json en disco y sincronización en localStorage.",
+      "Few-Shot y Chain-of-Thought integrados en la barra de prompts."
+    ]
+  },
+  "metaPromptTemplate": "[ROL Y OBJETIVO]\nActúa como un Arquitecto de Software Principal y Experto en Ingeniería.\nTu objetivo es diseñar e implementar: [Objetivo concreto].\n\n[CONTEXTO TÉCNICO]\n- Stack: [Ej. Node.js v20, TypeScript 5.4, PostgreSQL 16, Docker, Tailwind CSS]\n- Restricciones: [Ej. Complejidad temporal O(n log n), sin dependencias innecesarias, typing estricto sin any]\n- Patrones preferidos: [Ej. Clean Architecture, Principios SOLID, TDD, Resilient Error Handling]\n\n[METODOLOGÍA DE RESPUESTA]\n1. Diagnóstico previo: Analiza brevemente cuellos de botella y casos límite (edge cases).\n2. Arquitectura/Algoritmo: Explica la estrategia teórica antes de codificar.\n3. Código completo: Código moderno, completamente tipado, comentado y libre de placeholders como '// implementar aquí'.\n4. Pruebas y Verificación: Incluye 2 o 3 pruebas unitarias críticas con casos de error.\n\n[EJEMPLO / FEW-SHOT]\n- Entrada esperada: { \"id\": 1, \"payload\": \"raw_data\" }\n- Salida deseada: { \"success\": true, \"processed_at\": 1710000000 }"
+}

@@ -1,0 +1,6 @@
+{
+  "name": "GLaDOS OS - Agente de IA Local & Entorno Agéntico MCP",
+  "description": "Sistema operativo y agente autónomo local de GLaDOS OS: Gestor de Proyectos, Lector NIF binario, Motor CAD paramétrico, Learning Engine (Code Doctor) y bucle agéntico REA/MCP con Ollama y Gemini.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
