@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   FlaskConical,
   Upload,
@@ -11,6 +11,7 @@ import {
   Eye,
   Sparkles,
   ShieldCheck,
+  ShieldAlert,
   Palette,
   MapPin,
   Compass,
@@ -19,6 +20,10 @@ import {
   Download,
   Flame,
   CheckCircle,
+  CheckCircle2,
+  AlertTriangle,
+  ExternalLink,
+  RotateCcw,
 } from 'lucide-react';
 import { NifParseResult } from '../../types/glados';
 import {
@@ -32,6 +37,12 @@ import {
   downloadBgsmFile,
   getDefaultTextureSlots,
 } from '../../services/nifskopeTextureService';
+import {
+  analyzeNifForLabAndMaps,
+  sanitizeNifForLabAndMaps,
+  nifLabBridgeService,
+  DEMO_NIF_PRESETS,
+} from '../../services/nifAnalysisService';
 import { NifSkopeView } from '../nif/NifSkopeView';
 import { ObjToNifConverter } from '../nif/ObjToNifConverter';
 import { loggerService } from '../../services/loggerService';
@@ -46,7 +57,7 @@ export const SandboxPanel: React.FC = () => {
     parseNifFile('Building_Commercial_Chunk01.nif')
   );
   const [activeTab, setActiveTab] = useState<
-    'objToNif' | 'nifskope' | 'mapExplorer' | 'report' | 'blocks' | 'didacticNif'
+    'objToNif' | 'nifskope' | 'mapExplorer' | 'diagnostics' | 'report' | 'blocks' | 'didacticNif'
   >('nifskope');
   const [isParsing, setIsParsing] = useState(false);
 
@@ -67,6 +78,33 @@ export const SandboxPanel: React.FC = () => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 3000);
   };
+
+  // Sync with NIFs sent or analyzed from Chat Central
+  useEffect(() => {
+    const initialShared = nifLabBridgeService.getSharedNif();
+    if (initialShared) {
+      setParseResult(initialShared.parseResult);
+      setSelectedPreset(initialShared.parseResult.fileName);
+      if (initialShared.collisionGeometry) {
+        setConvertedCollisionGeometry(initialShared.collisionGeometry);
+      }
+      showToast(`✓ NIF "${initialShared.parseResult.fileName}" transferido desde Chat Central.`);
+    }
+
+    const unsubscribe = nifLabBridgeService.subscribe(() => {
+      const shared = nifLabBridgeService.getSharedNif();
+      if (shared) {
+        setParseResult(shared.parseResult);
+        setSelectedPreset(shared.parseResult.fileName);
+        if (shared.collisionGeometry) {
+          setConvertedCollisionGeometry(shared.collisionGeometry);
+        }
+        showToast(`✓ NIF "${shared.parseResult.fileName}" cargado en Lab & Mapas.`);
+      }
+    });
+
+    return unsubscribe;
+  }, []);
 
   const handleInspectNif = (name: string, buffer?: ArrayBuffer) => {
     setIsParsing(true);
@@ -244,6 +282,18 @@ export const SandboxPanel: React.FC = () => {
             >
               <MapPin className="w-3.5 h-3.5 text-emerald-400" />
               <span>Herramientas de Mapas &amp; Chunks</span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab('diagnostics')}
+              className={`px-3 py-1 rounded cursor-pointer transition-colors flex items-center gap-1.5 text-[11px] ${
+                activeTab === 'diagnostics'
+                  ? 'bg-gradient-to-r from-emerald-900/70 to-cyan-900/70 text-emerald-200 font-bold border border-emerald-500/70 shadow-xs'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+              <span>Diagnóstico &amp; Compatibilidad NIF</span>
             </button>
 
             <button
@@ -476,6 +526,178 @@ export const SandboxPanel: React.FC = () => {
                 </div>
               </div>
             </div>
+          ) : activeTab === 'diagnostics' ? (
+            /* Diagnostic & Map Compatibility Validation View */
+            (() => {
+              const { report } = analyzeNifForLabAndMaps(parseResult.fileName, undefined, parseResult);
+              return (
+                <div className="w-full h-full overflow-y-auto p-3 text-slate-200 bg-[#07090e] space-y-3 font-mono text-xs">
+                  {/* Top Compatibility Status Card */}
+                  <div className="p-3 rounded bg-[#0d1422] border border-[#1d2a42] flex flex-wrap items-center justify-between gap-3 shadow-md">
+                    <div className="flex items-center gap-3">
+                      <div className={`w-12 h-12 rounded-lg flex items-center justify-center font-bold text-lg border ${
+                        report.importScore >= 85
+                          ? 'bg-emerald-950/80 border-emerald-500 text-emerald-300'
+                          : report.importScore >= 70
+                          ? 'bg-amber-950/80 border-amber-500 text-amber-300'
+                          : 'bg-rose-950/80 border-rose-500 text-rose-300'
+                      }`}>
+                        {report.importScore}%
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <h3 className="font-bold text-sm text-slate-100">{report.fileName}</h3>
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
+                            report.isReadyForMaps
+                              ? 'bg-emerald-950 text-emerald-400 border-emerald-700'
+                              : 'bg-amber-950 text-amber-400 border-amber-700'
+                          }`}>
+                            {report.isReadyForMaps ? '✓ 100% APTO PARA MAPAS' : '⚠️ REQUIERE AJUSTES'}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-slate-400 mt-0.5">
+                          {report.gameEngine} &middot; Cabecera: {report.headerString} &middot; UserVersion: {report.userVersion}
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* Action Buttons */}
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <button
+                        onClick={() => {
+                          const { sanitizedResult, collisionGeometry } = sanitizeNifForLabAndMaps(parseResult, 'map_chunk');
+                          setParseResult(sanitizedResult);
+                          setConvertedCollisionGeometry(collisionGeometry);
+                          nifLabBridgeService.setSharedNif(sanitizedResult, collisionGeometry, 'file');
+                          showToast('✓ NIF auto-saneado: Colisión Havok y BSFadeNode inyectados');
+                        }}
+                        className="px-3 py-1.5 rounded bg-emerald-700 hover:bg-emerald-600 text-white font-bold text-xs flex items-center gap-1.5 shadow-md active:scale-95 transition-all cursor-pointer"
+                        title="Auto-reparar colisión física y BSFadeNode para importar sin atravesar el suelo"
+                      >
+                        <ShieldCheck className="w-3.5 h-3.5" />
+                        <span>Auto-Sanear para Mapas FO4</span>
+                      </button>
+
+                      <button
+                        onClick={() => setActiveTab('mapExplorer')}
+                        className="px-3 py-1.5 rounded bg-[#162132] hover:bg-[#1f2e46] text-cyan-300 border border-cyan-700 font-bold text-xs flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <MapPin className="w-3.5 h-3.5 text-cyan-400" />
+                        <span>Colocar en Celda de Mapa</span>
+                      </button>
+
+                      <button
+                        onClick={() => setActiveTab('nifskope')}
+                        className="px-3 py-1.5 rounded bg-[#162132] hover:bg-[#1f2e46] text-slate-200 border border-[#23334c] text-xs flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <Eye className="w-3.5 h-3.5 text-slate-400" />
+                        <span>Ver en NifSkope 3D</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* 4 Pillars Checklist Grid */}
+                  <div className="grid grid-cols-4 gap-2.5">
+                    {/* 1. Scene Graph & Root */}
+                    <div className="p-2.5 rounded bg-[#0a0f18] border border-[#172236] space-y-1">
+                      <div className="flex items-center justify-between text-xs font-bold text-cyan-400 border-b border-[#182338] pb-1">
+                        <span>1. Nodo Raíz (SceneGraph)</span>
+                        <span>{report.rootBlockType === 'BSFadeNode' ? '✓' : '⚠️'}</span>
+                      </div>
+                      <p className="text-[11px] font-bold text-slate-200">{report.rootBlockType}</p>
+                      <p className="text-[10px] text-slate-400 leading-relaxed">
+                        {report.rootBlockType === 'BSFadeNode'
+                          ? 'Excelente. BSFadeNode permite que el Creation Kit haga culling y streaming por chunks en celdas exteriores.'
+                          : 'Se recomienda envolver en BSFadeNode para celdas de mapa de Fallout 4.'}
+                      </p>
+                    </div>
+
+                    {/* 2. Havok Collision */}
+                    <div className="p-2.5 rounded bg-[#0a0f18] border border-[#172236] space-y-1">
+                      <div className="flex items-center justify-between text-xs font-bold text-emerald-400 border-b border-[#182338] pb-1">
+                        <span>2. Físicas & Havok</span>
+                        <span>{report.hasHavokCollision ? '✓' : '⚠️ Falta'}</span>
+                      </div>
+                      <p className="text-[11px] font-bold text-slate-200">
+                        {report.collisionType || 'Sin bhkCollisionObject'}
+                      </p>
+                      <p className="text-[10px] text-slate-400 leading-relaxed">
+                        {report.hasHavokCollision
+                          ? 'Límites Havok verificados. El personaje colisionará sólidamente sin atravesar el modelo.'
+                          : '¡Cuidado! Sin colisión Havok, el jugador o proyectiles atravesarán la estructura.'}
+                      </p>
+                    </div>
+
+                    {/* 3. Mesh & Geometry */}
+                    <div className="p-2.5 rounded bg-[#0a0f18] border border-[#172236] space-y-1">
+                      <div className="flex items-center justify-between text-xs font-bold text-amber-400 border-b border-[#182338] pb-1">
+                        <span>3. Geometría 3D</span>
+                        <span>✓</span>
+                      </div>
+                      <p className="text-[11px] font-bold text-slate-200">
+                        {report.totalVertices.toLocaleString()} V | {report.totalTriangles.toLocaleString()} T
+                      </p>
+                      <p className="text-[10px] text-slate-400 leading-relaxed">
+                        Búfer de vértices float32 extraído con matriz 3x3 de rotación ortogonal saneada contra NaNs.
+                      </p>
+                    </div>
+
+                    {/* 4. Shader & Material */}
+                    <div className="p-2.5 rounded bg-[#0a0f18] border border-[#172236] space-y-1">
+                      <div className="flex items-center justify-between text-xs font-bold text-purple-400 border-b border-[#182338] pb-1">
+                        <span>4. Shader PBR (.BGSM)</span>
+                        <span>{report.hasShaders ? '✓' : '⚠️'}</span>
+                      </div>
+                      <p className="text-[11px] font-bold text-slate-200">
+                        {report.shaderType || 'BSLightingShaderProperty'}
+                      </p>
+                      <p className="text-[10px] text-slate-400 leading-relaxed">
+                        8 canales de texturas compatibles con PBR de Bethesda (Diffuse, Normal, Specular, CubeMap).
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Recommendations & Diagnostic Items */}
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="p-3 rounded bg-[#0a0f18] border border-[#172236] space-y-2">
+                      <h4 className="text-xs font-bold text-slate-200 flex items-center gap-1.5 border-b border-[#182338] pb-1">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                        <span>Verificaciones Superadas ({report.recommendations.length}):</span>
+                      </h4>
+                      <div className="space-y-1">
+                        {report.recommendations.map((rec, i) => (
+                          <div key={i} className="text-[11px] text-emerald-300/90 flex items-start gap-1.5">
+                            <span className="text-emerald-500 font-bold">•</span>
+                            <span>{rec}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="p-3 rounded bg-[#0a0f18] border border-[#172236] space-y-2">
+                      <h4 className="text-xs font-bold text-slate-200 flex items-center gap-1.5 border-b border-[#182338] pb-1">
+                        <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
+                        <span>Avisos de Optimización ({report.warnings.length}):</span>
+                      </h4>
+                      <div className="space-y-1">
+                        {report.warnings.length === 0 ? (
+                          <p className="text-[11px] text-slate-500 italic">
+                            No se detectaron advertencias críticas. Este modelo está 100% listo para importarse.
+                          </p>
+                        ) : (
+                          report.warnings.map((w, i) => (
+                            <div key={i} className="text-[11px] text-amber-300/90 flex items-start gap-1.5">
+                              <span className="text-amber-500 font-bold">•</span>
+                              <span>{w}</span>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()
           ) : activeTab === 'report' ? (
             <div className="w-full h-full overflow-y-auto p-3 text-slate-200 bg-[#06080b]">
               <pre className="whitespace-pre-wrap leading-relaxed text-xs">

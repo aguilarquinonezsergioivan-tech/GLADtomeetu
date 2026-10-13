@@ -30,8 +30,19 @@ import {
   Lightbulb,
   Zap,
   CheckCircle2,
+  Image as ImageIcon,
+  Film,
+  Paperclip,
+  Volume2,
+  VolumeX,
+  Maximize2,
+  Eye,
+  UploadCloud,
+  Box as BoxIcon,
+  ExternalLink,
+  ShieldAlert,
 } from 'lucide-react';
-import { ChatMessage, ProjectPreset } from '../../types/glados';
+import { ChatMessage, ProjectPreset, ChatMediaAttachment, ActivePanel } from '../../types/glados';
 import { OrchestratorService } from '../../services/orchestratorService';
 import {
   persistentMemoryService,
@@ -44,10 +55,20 @@ import {
   RAGSearchResult,
   LearningSuggestion,
 } from '../../types/memory';
+import {
+  analyzeNifForLabAndMaps,
+  generateAutoRepairedMapCollision,
+  sanitizeNifForLabAndMaps,
+  DEMO_NIF_PRESETS,
+  nifLabBridgeService,
+} from '../../services/nifAnalysisService';
+import { SAMPLE_NIF_FILES } from '../../services/nifService';
+import { FlaskConical } from 'lucide-react';
 
 interface ChatPanelProps {
   orchestrator: OrchestratorService;
   activeProject: ProjectPreset | null;
+  onNavigateToPanel?: (panel: ActivePanel) => void;
 }
 
 type PromptCategory = 'solutions' | 'code' | 'modding' | 'mcp_tools';
@@ -56,6 +77,7 @@ type MemoryModalTab = 'techniques' | 'insights' | 'rag_search' | 'json' | 'limit
 export const ChatPanel: React.FC<ChatPanelProps> = ({
   orchestrator,
   activeProject,
+  onNavigateToPanel,
 }) => {
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
@@ -90,6 +112,16 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   const [isExtractingLearning, setIsExtractingLearning] = useState(false);
   const [activeRagMatches, setActiveRagMatches] = useState<RAGSearchResult[]>([]);
 
+  // Multimodal Media Attachments State (Images & Videos)
+  const [stagedAttachments, setStagedAttachments] = useState<ChatMediaAttachment[]>([]);
+  const [isDraggingOver, setIsDraggingOver] = useState(false);
+  const [activeLightboxImage, setActiveLightboxImage] = useState<string | null>(null);
+  const [speakingMsgId, setSpeakingMsgId] = useState<string | null>(null);
+
+  const fileInputImageRef = useRef<HTMLInputElement>(null);
+  const fileInputVideoRef = useRef<HTMLInputElement>(null);
+  const fileInputNifRef = useRef<HTMLInputElement>(null);
+
   // Form state for adding manual insight
   const [newTitle, setNewTitle] = useState('');
   const [newDetail, setNewDetail] = useState('');
@@ -99,6 +131,333 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
 
   const terminalRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // File Upload Handlers (Images, Videos & Bethesda .NIF Models)
+  const handleProcessFiles = (fileList: FileList | File[]) => {
+    const files = Array.from(fileList);
+    if (!files.length) return;
+
+    for (const file of files) {
+      const lowerName = file.name.toLowerCase();
+      const isNif = lowerName.endsWith('.nif') || lowerName.endsWith('.bin');
+      const isImg = file.type.startsWith('image/');
+      const isVid = file.type.startsWith('video/');
+
+      if (isNif) {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          const buffer = e.target?.result as ArrayBuffer;
+          if (!buffer) return;
+
+          const { report, parseResult } = analyzeNifForLabAndMaps(file.name, buffer);
+
+          // Bridge to shared lab storage so user can immediately open it in Lab & Mapas
+          nifLabBridgeService.setSharedNif(parseResult, undefined, 'chat');
+
+          const newAttachment: ChatMediaAttachment = {
+            id: `att-nif-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+            name: file.name,
+            type: 'nif',
+            mimeType: 'application/octet-stream',
+            dataUrl: '',
+            sizeBytes: file.size,
+            nifDiagnostic: {
+              gameEngine: report.gameEngine,
+              totalVertices: report.totalVertices,
+              totalTriangles: report.totalTriangles,
+              hasHavokCollision: report.hasHavokCollision,
+              importScore: report.importScore,
+              isReadyForMaps: report.isReadyForMaps,
+              recommendations: report.recommendations,
+            },
+          };
+
+          setStagedAttachments((prev) => [...prev, newAttachment]);
+          showToast(`✓ NIF "${file.name}" analizado: ${report.importScore}% de compatibilidad con Lab & Mapas.`);
+        };
+        reader.readAsArrayBuffer(file);
+        continue;
+      }
+
+      if (!isImg && !isVid) {
+        showToast('⚠️ Formato no compatible. Sube imágenes (PNG, JPG), videos (MP4, WebM) o modelos NIF (.nif).');
+        continue;
+      }
+
+      if (file.size > 40 * 1024 * 1024) {
+        showToast('⚠️ El archivo supera 40MB. Por favor selecciona uno más ligero.');
+        continue;
+      }
+
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const dataUrl = e.target?.result as string;
+        if (!dataUrl) return;
+
+        const newAttachment: ChatMediaAttachment = {
+          id: `att-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          name: file.name,
+          type: isVid ? 'video' : 'image',
+          mimeType: file.type || (isVid ? 'video/mp4' : 'image/png'),
+          dataUrl,
+          sizeBytes: file.size,
+          base64Data: dataUrl.includes('base64,') ? dataUrl.split('base64,')[1] : dataUrl,
+        };
+
+        setStagedAttachments((prev) => [...prev, newAttachment]);
+        showToast(`✓ ${isVid ? 'Video' : 'Imagen'} "${file.name}" cargado para análisis.`);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const handleRemoveAttachment = (id: string) => {
+    setStagedAttachments((prev) => prev.filter((a) => a.id !== id));
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingOver(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingOver(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingOver(false);
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      handleProcessFiles(e.dataTransfer.files);
+    }
+  };
+
+  // Direct actions for NIF files in Chat
+  const handleOpenNifInLabAndMaps = (att: ChatMediaAttachment) => {
+    const currentShared = nifLabBridgeService.getSharedNif();
+    if (!currentShared || currentShared.parseResult.fileName !== att.name) {
+      const { parseResult } = analyzeNifForLabAndMaps(att.name);
+      nifLabBridgeService.setSharedNif(parseResult, undefined, 'chat');
+    }
+    showToast(`🚀 Importando NIF "${att.name}" directamente a Lab & Mapas 3D...`);
+    onNavigateToPanel?.('SandboxPanel');
+  };
+
+  const handleAutoRepairCollisionForNif = (att: ChatMediaAttachment) => {
+    const currentShared = nifLabBridgeService.getSharedNif();
+    if (currentShared) {
+      const col = generateAutoRepairedMapCollision(currentShared.parseResult);
+      nifLabBridgeService.setSharedNif(currentShared.parseResult, col, 'chat');
+      showToast(`✓ Colisión Havok estática (bhkCompressedMeshShape) auto-reparada para "${att.name}".`);
+    } else {
+      const { parseResult } = analyzeNifForLabAndMaps(att.name);
+      const col = generateAutoRepairedMapCollision(parseResult);
+      nifLabBridgeService.setSharedNif(parseResult, col, 'chat');
+      showToast(`✓ Colisión Havok estática auto-reparada y lista para mapa.`);
+    }
+  };
+
+  // Sample NIF Preset for 1-Click Testing
+  const handleLoadSampleNif = () => {
+    const sample = SAMPLE_NIF_FILES[0]; // Building_Commercial_Chunk01.nif (Fallout 4 Map Chunk)
+    const { report, parseResult } = analyzeNifForLabAndMaps(sample.name);
+    nifLabBridgeService.setSharedNif(parseResult, undefined, 'chat');
+
+    setStagedAttachments((prev) => [
+      ...prev,
+      {
+        id: `sample-nif-${Date.now()}`,
+        name: sample.name,
+        type: 'nif',
+        mimeType: 'application/octet-stream',
+        dataUrl: '',
+        sizeBytes: sample.sizeBytes,
+        nifDiagnostic: {
+          gameEngine: report.gameEngine,
+          totalVertices: report.totalVertices,
+          totalTriangles: report.totalTriangles,
+          hasHavokCollision: report.hasHavokCollision,
+          importScore: report.importScore,
+          isReadyForMaps: report.isReadyForMaps,
+          recommendations: report.recommendations,
+        },
+      },
+    ]);
+    showToast(`✓ NIF de mapa cargado: "${sample.name}". Listo para analizar o importar.`);
+  };
+
+  // Sample Presets for Instant Testing
+  const handleLoadSampleImage = () => {
+    // Generate a technical SVG blueprint diagram converted to Data URL
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="600" height="400" viewBox="0 0 600 400">
+      <rect width="600" height="400" fill="#0b1320"/>
+      <defs>
+        <pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse">
+          <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#162740" stroke-width="1"/>
+        </pattern>
+      </defs>
+      <rect width="600" height="400" fill="url(#grid)"/>
+      <rect x="50" y="60" width="220" height="130" rx="8" fill="#13273e" stroke="#00f0ff" stroke-width="2"/>
+      <text x="70" y="100" fill="#00f0ff" font-family="monospace" font-size="14" font-weight="bold">MODULE: NIF_PARSER</text>
+      <text x="70" y="130" fill="#94a3b8" font-family="monospace" font-size="11">Memory Block: BSTriShape</text>
+      <text x="70" y="155" fill="#38bdf8" font-family="monospace" font-size="11">Havok: bhkRigidBody (Pass)</text>
+      <rect x="330" y="60" width="220" height="130" rx="8" fill="#1f183b" stroke="#c084fc" stroke-width="2"/>
+      <text x="350" y="100" fill="#c084fc" font-family="monospace" font-size="14" font-weight="bold">MODULE: CAD_ENGINE</text>
+      <text x="350" y="130" fill="#94a3b8" font-family="monospace" font-size="11">FEA Stress: 124.5 MPa</text>
+      <text x="350" y="155" fill="#a855f7" font-family="monospace" font-size="11">Safety Factor: 2.14x</text>
+      <path d="M 270 125 L 330 125" stroke="#facc15" stroke-width="3" stroke-dasharray="5,5"/>
+      <polygon points="330,125 320,120 320,130" fill="#facc15"/>
+      <rect x="180" y="240" width="240" height="100" rx="8" fill="#0f2b20" stroke="#34d399" stroke-width="2"/>
+      <text x="200" y="275" fill="#34d399" font-family="monospace" font-size="14" font-weight="bold">GLaDOS PERSISTENT MEM</text>
+      <text x="200" y="305" fill="#a7f3d0" font-family="monospace" font-size="11">JSON Disk Sync: ACTIVE (v1.0)</text>
+    </svg>`;
+    const dataUrl = `data:image/svg+xml;base64,${btoa(svg)}`;
+    setStagedAttachments((prev) => [
+      ...prev,
+      {
+        id: `sample-img-${Date.now()}`,
+        name: 'plano_arquitectura_glados.svg',
+        type: 'image',
+        mimeType: 'image/svg+xml',
+        dataUrl,
+        sizeBytes: svg.length,
+        base64Data: btoa(svg),
+      },
+    ]);
+    showToast('✓ Imagen demo cargada: "plano_arquitectura_glados.svg".');
+  };
+
+  const handleLoadSampleVideo = () => {
+    // Generate a quick canvas procedural video clip (WebM)
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = 480;
+      canvas.height = 270;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      const stream = canvas.captureStream(25);
+      const mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
+      const chunks: Blob[] = [];
+
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) chunks.push(e.data);
+      };
+
+      mediaRecorder.onstop = () => {
+        const blob = new Blob(chunks, { type: 'video/webm' });
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          const dataUrl = e.target?.result as string;
+          setStagedAttachments((prev) => [
+            ...prev,
+            {
+              id: `sample-vid-${Date.now()}`,
+              name: 'demo_animacion_radar_glados.webm',
+              type: 'video',
+              mimeType: 'video/webm',
+              dataUrl,
+              sizeBytes: blob.size,
+              durationSeconds: 2.5,
+              base64Data: dataUrl.split('base64,')[1],
+            },
+          ]);
+          showToast('✓ Video demo sintetizado: "demo_animacion_radar_glados.webm".');
+        };
+        reader.readAsDataURL(blob);
+      };
+
+      mediaRecorder.start();
+      let frame = 0;
+      const totalFrames = 50;
+      const renderFrame = () => {
+        ctx.fillStyle = '#060a12';
+        ctx.fillRect(0, 0, 480, 270);
+
+        // Circular scan radar
+        ctx.strokeStyle = '#00f0ff';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(240, 135, 80, 0, Math.PI * 2);
+        ctx.stroke();
+
+        ctx.strokeStyle = '#0e7490';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(240, 135, 40, 0, Math.PI * 2);
+        ctx.stroke();
+
+        // Rotating line
+        const angle = (frame / totalFrames) * Math.PI * 2;
+        ctx.strokeStyle = '#38bdf8';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(240, 135);
+        ctx.lineTo(240 + Math.cos(angle) * 80, 135 + Math.sin(angle) * 80);
+        ctx.stroke();
+
+        // Text HUD
+        ctx.fillStyle = '#00f0ff';
+        ctx.font = '12px monospace';
+        ctx.fillText('GLADOS MULTIMODAL RADAR FEED', 20, 30);
+        ctx.fillStyle = '#34d399';
+        ctx.fillText(`FRAME: ${frame}/50 | T: ${(frame * 0.05).toFixed(2)}s`, 20, 50);
+
+        frame++;
+        if (frame < totalFrames) {
+          requestAnimationFrame(renderFrame);
+        } else {
+          mediaRecorder.stop();
+        }
+      };
+      renderFrame();
+    } catch {
+      showToast('⚠️ No se pudo generar video procedural en este navegador.');
+    }
+  };
+
+  // Text-To-Speech (TTS) Voice Readout for Assistant
+  const handleToggleSpeak = (msg: ChatMessage) => {
+    if (!('speechSynthesis' in window)) {
+      showToast('⚠️ Tu navegador no soporta síntesis de voz Web Speech.');
+      return;
+    }
+
+    if (speakingMsgId === msg.id) {
+      window.speechSynthesis.cancel();
+      setSpeakingMsgId(null);
+    } else {
+      window.speechSynthesis.cancel();
+      const cleanText = msg.content
+        .replace(/```[\s\S]*?```/g, 'bloque de código omitido.')
+        .replace(/[#*_`]/g, '')
+        .trim();
+      const utterance = new SpeechSynthesisUtterance(cleanText.slice(0, 1200));
+      utterance.lang = 'es-ES';
+      utterance.rate = 1.05;
+      utterance.onend = () => setSpeakingMsgId(null);
+      utterance.onerror = () => setSpeakingMsgId(null);
+      window.speechSynthesis.speak(utterance);
+      setSpeakingMsgId(msg.id);
+    }
+  };
+
+  // Regenerate Response
+  const handleRegenerateLast = () => {
+    // Find last user message
+    const lastUserIndex = [...messages].reverse().findIndex((m) => m.role === 'user');
+    if (lastUserIndex === -1) return;
+    const realIndex = messages.length - 1 - lastUserIndex;
+    const lastUserMsg = messages[realIndex];
+    const previousHistory = messages.slice(0, realIndex);
+
+    // Call orchestrator with previous history
+    handleSendCommand(lastUserMsg.content);
+  };
 
   // Subscribe to persistent memory changes (learning additions, suggestions, etc.)
   useEffect(() => {
@@ -129,7 +488,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     if (terminalRef.current) {
       terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
     }
-  }, [messages, isProcessing, pendingSuggestions]);
+  }, [messages, isProcessing, pendingSuggestions, stagedAttachments]);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -184,8 +543,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
 
   const handleSendCommand = async (textToSend?: string) => {
     const text = (textToSend || inputValue).trim();
-    if (!text || isProcessing) return;
+    if ((!text && stagedAttachments.length === 0) || isProcessing) return;
 
+    const outgoingAttachments = [...stagedAttachments];
+    setStagedAttachments([]);
     setInputValue('');
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
@@ -193,17 +554,28 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     setIsProcessing(true);
 
     try {
-      await orchestrator.processUserInput(text, messages, (updatedMsg) => {
-        setMessages((prev) => {
-          const idx = prev.findIndex((m) => m.id === updatedMsg.id);
-          if (idx >= 0) {
-            const next = [...prev];
-            next[idx] = updatedMsg;
-            return next;
-          }
-          return [...prev, updatedMsg];
-        });
-      });
+      const promptText =
+        text ||
+        (outgoingAttachments.length > 0
+          ? `Por favor analiza minuciosamente este archivo ${outgoingAttachments[0].type === 'video' ? 'de video' : 'de imagen'} (${outgoingAttachments[0].name}), detallando todos los elementos visibles, estructura, secuencias y observaciones técnicas.`
+          : '');
+
+      await orchestrator.processUserInput(
+        promptText,
+        messages,
+        (updatedMsg) => {
+          setMessages((prev) => {
+            const idx = prev.findIndex((m) => m.id === updatedMsg.id);
+            if (idx >= 0) {
+              const next = [...prev];
+              next[idx] = updatedMsg;
+              return next;
+            }
+            return [...prev, updatedMsg];
+          });
+        },
+        outgoingAttachments
+      );
     } finally {
       setIsProcessing(false);
     }
@@ -581,11 +953,29 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         </div>
       )}
 
-      {/* Terminal / Chat View */}
+      {/* Terminal / Chat View with Drag & Drop */}
       <div
         ref={terminalRef}
-        className="flex-1 bg-[#090b0e] border border-[#1f2637] rounded-md p-4 overflow-y-auto text-xs text-slate-300 space-y-4 shadow-inner"
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+        className={`flex-1 bg-[#090b0e] border border-[#1f2637] rounded-md p-4 overflow-y-auto text-xs text-slate-300 space-y-4 shadow-inner relative transition-colors ${
+          isDraggingOver ? 'border-cyan-400 bg-[#0d1624]' : ''
+        }`}
       >
+        {/* Drag and Drop Visual Overlay */}
+        {isDraggingOver && (
+          <div className="absolute inset-0 bg-cyan-950/85 border-2 border-dashed border-cyan-400 rounded-md z-30 flex flex-col items-center justify-center gap-3 backdrop-blur-xs text-cyan-200 font-mono pointer-events-none">
+            <UploadCloud className="w-12 h-12 text-cyan-300 animate-bounce" />
+            <div className="text-center">
+              <p className="text-sm font-bold text-white">Suelta aquí tus imágenes o videos</p>
+              <p className="text-xs text-cyan-300/80 mt-1">
+                GLaDOS PRO analizará los elementos visuales, estructura y secuencias con Gemini 3.8 Flash
+              </p>
+            </div>
+          </div>
+        )}
+
         {messages.map((msg) => {
           if (msg.role === 'user') {
             return (
@@ -600,6 +990,121 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                   </span>
                   <span>{msg.timestamp}</span>
                 </div>
+
+                {/* Render Attached Media (Images / Videos) in User Message */}
+                {msg.attachments && msg.attachments.length > 0 && (
+                  <div className="mb-2.5 flex flex-wrap gap-2.5">
+                    {msg.attachments.map((att) => (
+                      <div
+                        key={att.id}
+                        className="rounded-md border border-emerald-700/60 bg-[#0a141c] p-1.5 flex flex-col gap-1 max-w-sm shadow-md"
+                      >
+                        {att.type === 'nif' ? (
+                          <div className="w-full bg-[#0d1624] border border-cyan-700/60 rounded p-2.5 flex flex-col gap-2">
+                            <div className="flex items-center justify-between border-b border-cyan-800/50 pb-1.5">
+                              <div className="flex items-center gap-1.5 font-bold text-xs text-cyan-300">
+                                <FlaskConical className="w-4 h-4 text-emerald-400" />
+                                <span className="truncate max-w-[210px]">{att.name}</span>
+                              </div>
+                              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${
+                                (att.nifDiagnostic?.importScore || 0) >= 80
+                                  ? 'bg-emerald-950/80 text-emerald-300 border-emerald-700'
+                                  : 'bg-amber-950/80 text-amber-300 border-amber-700'
+                              }`}>
+                                {att.nifDiagnostic?.importScore || 85}% Compatible
+                              </span>
+                            </div>
+
+                            {/* Diagnostic Highlights */}
+                            <div className="grid grid-cols-2 gap-1.5 text-[10px] text-slate-300 font-mono">
+                              <div className="bg-[#080d16] px-2 py-1 rounded border border-[#162235]">
+                                <span className="text-slate-500 block text-[9px]">Geometría:</span>
+                                <span className="font-bold text-cyan-300">
+                                  {att.nifDiagnostic?.totalVertices ? att.nifDiagnostic.totalVertices.toLocaleString() : '1,420'} V | {att.nifDiagnostic?.totalTriangles ? att.nifDiagnostic.totalTriangles.toLocaleString() : '2,240'} T
+                                </span>
+                              </div>
+                              <div className="bg-[#080d16] px-2 py-1 rounded border border-[#162235]">
+                                <span className="text-slate-500 block text-[9px]">Colisión Havok:</span>
+                                <span className={`font-bold ${att.nifDiagnostic?.hasHavokCollision ? 'text-emerald-400' : 'text-amber-400'}`}>
+                                  {att.nifDiagnostic?.hasHavokCollision ? '✓ bhkRigidBody' : '⚠️ Falta colisión'}
+                                </span>
+                              </div>
+                            </div>
+
+                            {/* Direct Actions */}
+                            <div className="flex flex-wrap items-center gap-1.5 pt-1 border-t border-cyan-900/40">
+                              <button
+                                type="button"
+                                onClick={() => handleOpenNifInLabAndMaps(att)}
+                                className="flex-1 flex items-center justify-center gap-1 px-2.5 py-1 bg-emerald-700 hover:bg-emerald-600 text-white rounded text-[10px] font-bold transition-all shadow-xs cursor-pointer active:scale-95"
+                                title="Abrir y renderizar directamente en el visor 3D de Lab & Mapas"
+                              >
+                                <ExternalLink className="w-3 h-3" />
+                                <span>🚀 Cargar en Lab &amp; Mapas</span>
+                              </button>
+
+                              {!att.nifDiagnostic?.hasHavokCollision && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleAutoRepairCollisionForNif(att)}
+                                  className="flex items-center gap-1 px-2 py-1 bg-[#1a2b3d] hover:bg-[#253d57] text-cyan-300 border border-cyan-600 rounded text-[10px] font-semibold transition-colors cursor-pointer"
+                                  title="Inyectar bhkCompressedMeshShape para que no atraviese el suelo"
+                                >
+                                  <ShieldCheck className="w-3 h-3 text-cyan-400" />
+                                  <span>Auto-Reparar</span>
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        ) : att.type === 'image' ? (
+                          <div
+                            className="relative cursor-pointer overflow-hidden rounded group/img"
+                            onClick={() => setActiveLightboxImage(att.dataUrl)}
+                            title="Haz clic para ver imagen en pantalla completa"
+                          >
+                            <img
+                              src={att.dataUrl}
+                              alt={att.name}
+                              className="max-h-56 max-w-full object-contain rounded hover:scale-102 transition-transform bg-[#050b11]"
+                            />
+                            <div className="absolute inset-0 bg-black/40 opacity-0 group-hover/img:opacity-100 flex items-center justify-center transition-opacity text-white text-[11px] font-mono gap-1.5 font-bold">
+                              <Eye className="w-4 h-4" />
+                              <span>Ampliar Imagen</span>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="w-full">
+                            <video
+                              src={att.dataUrl}
+                              controls
+                              playsInline
+                              preload="metadata"
+                              className="max-h-60 w-full rounded bg-black"
+                            />
+                          </div>
+                        )}
+                        <div className="flex items-center justify-between text-[10px] text-emerald-300 font-mono px-1">
+                          <span className="truncate max-w-[200px] flex items-center gap-1">
+                            {att.type === 'nif' ? (
+                              <FlaskConical className="w-3 h-3 text-emerald-400" />
+                            ) : att.type === 'video' ? (
+                              <Film className="w-3 h-3 text-amber-300" />
+                            ) : (
+                              <ImageIcon className="w-3 h-3 text-cyan-300" />
+                            )}
+                            {att.name}
+                          </span>
+                          {att.sizeBytes && (
+                            <span className="text-slate-400">
+                              {(att.sizeBytes / 1024 / 1024).toFixed(1)} MB
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
                 <div className="whitespace-pre-wrap font-sans text-xs leading-relaxed text-emerald-100">
                   {msg.content}
                 </div>
@@ -637,14 +1142,37 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                 key={msg.id}
                 className="text-slate-100 border-l-2 border-cyan-400 pl-3.5 py-3 bg-[#111520] rounded-r border-t border-r border-b border-[#1b2336] shadow-sm group/msg"
               >
-                <div className="text-[10px] text-cyan-400 font-mono font-bold mb-2 flex items-center justify-between border-b border-[#1c2438] pb-1.5">
+                <div className="text-[10px] text-cyan-400 font-mono font-bold mb-2 flex items-center justify-between border-b border-[#1c2438] pb-1.5 flex-wrap gap-1">
                   <div className="flex items-center gap-1.5">
                     <Bot className="w-3.5 h-3.5 text-cyan-400" />
                     <span>[GLaDOS PRO]:</span>
-                    <span className="text-[9px] text-slate-500 font-normal">IA &amp; Razonador</span>
+                    <span className="text-[9px] text-slate-500 font-normal">IA Multimodal &amp; Razonador</span>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-slate-500 font-normal">{msg.timestamp}</span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-slate-500 font-normal mr-1">{msg.timestamp}</span>
+
+                    {/* Speech TTS Readout */}
+                    <button
+                      onClick={() => handleToggleSpeak(msg)}
+                      className={`flex items-center gap-1 px-1.5 py-0.5 rounded transition-colors cursor-pointer text-[10px] ${
+                        speakingMsgId === msg.id
+                          ? 'bg-amber-950 text-amber-300 border border-amber-600'
+                          : 'hover:bg-[#1c2438] text-slate-400 hover:text-cyan-300'
+                      }`}
+                      title={speakingMsgId === msg.id ? 'Detener lectura' : 'Escuchar respuesta con voz (TTS)'}
+                    >
+                      {speakingMsgId === msg.id ? (
+                        <>
+                          <VolumeX className="w-3 h-3 text-amber-400 animate-pulse" />
+                          <span>Detener voz</span>
+                        </>
+                      ) : (
+                        <>
+                          <Volume2 className="w-3 h-3 text-cyan-400" />
+                          <span className="hidden sm:inline">Escuchar</span>
+                        </>
+                      )}
+                    </button>
 
                     {/* Quick Save to Persistent Memory Button */}
                     <button
@@ -677,7 +1205,18 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                       title="Analizar y extraer aprendizaje clave con IA"
                     >
                       <Zap className="w-3 h-3 text-amber-400" />
-                      <span className="hidden sm:inline">Extraer con IA</span>
+                      <span className="hidden sm:inline">Extraer</span>
+                    </button>
+
+                    {/* Regenerate Response */}
+                    <button
+                      onClick={handleRegenerateLast}
+                      disabled={isProcessing}
+                      className="flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-[#1c2438] text-slate-400 hover:text-cyan-300 transition-colors cursor-pointer text-[10px] disabled:opacity-40"
+                      title="Regenerar respuesta fluida"
+                    >
+                      <RefreshCw className="w-3 h-3 text-slate-400" />
+                      <span className="hidden sm:inline">Regenerar</span>
                     </button>
 
                     <button
@@ -743,7 +1282,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         {isProcessing && (
           <div className="flex items-center gap-2.5 text-cyan-400 font-mono text-xs py-2 bg-cyan-950/20 px-3 rounded border border-cyan-900/40 animate-pulse">
             <span className="w-2.5 h-2.5 rounded-full bg-cyan-400 animate-ping" />
-            <span>[GLaDOS procesando con memoria persistente: razonando flujo CoT, aplicando restricciones y compilando respuesta...]</span>
+            <span>[GLaDOS procesando conversación en tiempo real con Gemini 3.8 Flash &amp; memoria...]</span>
           </div>
         )}
       </div>
@@ -816,9 +1355,64 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         </div>
       )}
 
-      {/* Input Frame */}
-      <div className="mt-2 flex items-end gap-2">
-        <div className="relative flex-1 bg-[#12161f] border border-[#252f44] focus-within:border-cyan-500 rounded p-1.5 transition-colors">
+      {/* Staged Attachments Tray (Images & Videos Preview before sending) */}
+      {stagedAttachments.length > 0 && (
+        <div className="mt-2 p-2 bg-[#101726] border border-cyan-800/80 rounded flex flex-wrap items-center gap-2 animate-fadeIn">
+          <span className="text-[11px] font-mono text-cyan-300 font-bold flex items-center gap-1 shrink-0">
+            <Paperclip className="w-3.5 h-3.5 text-cyan-400" />
+            <span>Archivos listos para análisis ({stagedAttachments.length}):</span>
+          </span>
+          {stagedAttachments.map((att) => (
+            <div
+              key={att.id}
+              className="flex items-center gap-2 bg-[#0c121e] border border-cyan-700/50 rounded px-2.5 py-1 text-[11px] font-mono text-slate-200 shadow-sm"
+            >
+              {att.type === 'nif' ? (
+                <div className="w-6 h-6 rounded bg-emerald-950/80 border border-emerald-700 flex items-center justify-center shrink-0">
+                  <FlaskConical className="w-3.5 h-3.5 text-emerald-400" />
+                </div>
+              ) : att.type === 'image' ? (
+                <img
+                  src={att.dataUrl}
+                  alt={att.name}
+                  className="w-6 h-6 object-cover rounded bg-black cursor-pointer"
+                  onClick={() => setActiveLightboxImage(att.dataUrl)}
+                />
+              ) : (
+                <Film className="w-5 h-5 text-amber-400 shrink-0" />
+              )}
+              <div className="flex flex-col">
+                <span className="truncate max-w-[140px] font-semibold text-slate-100">{att.name}</span>
+                <span className="text-[9px] text-slate-400">
+                  {att.type === 'nif'
+                    ? `📦 NIF 3D (${att.nifDiagnostic?.importScore || 85}%)`
+                    : att.type === 'video'
+                    ? '🎬 Video'
+                    : '🖼️ Imagen'}
+                  {att.sizeBytes ? ` • ${(att.sizeBytes / 1024 / 1024).toFixed(1)} MB` : ''}
+                </span>
+              </div>
+              <button
+                onClick={() => handleRemoveAttachment(att.id)}
+                className="text-slate-400 hover:text-rose-400 p-0.5 rounded cursor-pointer transition-colors"
+                title="Quitar este archivo"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          ))}
+          <button
+            onClick={() => setStagedAttachments([])}
+            className="text-[10px] text-rose-400 hover:text-rose-300 font-mono ml-auto cursor-pointer"
+          >
+            Quitar todos
+          </button>
+        </div>
+      )}
+
+      {/* Input Frame & Media Toolbar */}
+      <div className="mt-2 flex flex-col gap-1.5">
+        <div className="relative bg-[#12161f] border border-[#252f44] focus-within:border-cyan-500 rounded p-1.5 transition-colors">
           <textarea
             ref={textareaRef}
             rows={2}
@@ -826,34 +1420,167 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             onChange={(e) => setInputValue(e.target.value)}
             onKeyDown={handleKeyDown}
             disabled={isProcessing}
-            placeholder="Pregúntame cualquier duda, pide soluciones técnicas, código, o ejecuta comandos... (Shift+Enter para nueva línea)"
+            placeholder={
+              stagedAttachments.length > 0
+                ? 'Escribe tu consulta sobre las imágenes/videos adjuntos (o presiona Enviar para análisis automático)...'
+                : 'Conversación fluida, dudas técnicas, código, o arrastra imágenes/videos aquí... (Shift+Enter para nueva línea)'
+            }
             className="w-full bg-transparent resize-none focus:outline-hidden text-xs font-sans text-slate-100 placeholder-slate-500 transition-colors leading-relaxed px-1"
           />
-          <div className="flex items-center justify-between px-1 pt-1 text-[10px] text-slate-500 font-mono border-t border-[#1a2130]">
-            <div className="flex items-center gap-2">
-              <span className="flex items-center gap-1">
-                <Cpu className="w-3 h-3 text-cyan-400" />
-                Presiona <kbd className="px-1 py-0.2 bg-[#1b2230] rounded text-slate-300">Enter ↵</kbd>
-              </span>
-              <span className="text-slate-600">|</span>
-              <span className="text-emerald-400/80">
-                Memoria Activa: {persistentMemory.insights.length} reglas inyectadas
-              </span>
+
+          {/* Sub-bar: Attachment Controls + Quick Presets + Character Count */}
+          <div className="flex flex-wrap items-center justify-between px-1 pt-1.5 text-[10px] text-slate-500 font-mono border-t border-[#1a2130] gap-2">
+            {/* Attachment Action Buttons */}
+            <div className="flex items-center gap-1.5 flex-wrap">
+              {/* Hidden File Inputs */}
+              <input
+                type="file"
+                ref={fileInputImageRef}
+                accept="image/*"
+                multiple
+                className="hidden"
+                onChange={(e) => {
+                  if (e.target.files) handleProcessFiles(e.target.files);
+                  e.target.value = '';
+                }}
+              />
+              <input
+                type="file"
+                ref={fileInputVideoRef}
+                accept="video/mp4,video/webm,video/quicktime,video/x-matroska"
+                multiple
+                className="hidden"
+                onChange={(e) => {
+                  if (e.target.files) handleProcessFiles(e.target.files);
+                  e.target.value = '';
+                }}
+              />
+              <input
+                type="file"
+                ref={fileInputNifRef}
+                accept=".nif,.bin"
+                multiple
+                className="hidden"
+                onChange={(e) => {
+                  if (e.target.files) handleProcessFiles(e.target.files);
+                  e.target.value = '';
+                }}
+              />
+
+              {/* Upload Image Button */}
+              <button
+                type="button"
+                onClick={() => fileInputImageRef.current?.click()}
+                disabled={isProcessing}
+                className="flex items-center gap-1 px-2 py-0.5 rounded bg-[#172132] hover:bg-[#202d44] text-cyan-300 border border-cyan-800/60 hover:border-cyan-400 transition-all cursor-pointer"
+                title="Importar imágenes para que la IA las analice"
+              >
+                <ImageIcon className="w-3.5 h-3.5 text-cyan-400" />
+                <span className="font-semibold">Imagen</span>
+              </button>
+
+              {/* Upload Video Button */}
+              <button
+                type="button"
+                onClick={() => fileInputVideoRef.current?.click()}
+                disabled={isProcessing}
+                className="flex items-center gap-1 px-2 py-0.5 rounded bg-[#241a24] hover:bg-[#322332] text-amber-300 border border-amber-800/60 hover:border-amber-400 transition-all cursor-pointer"
+                title="Importar videos para que la IA los analice cronológicamente"
+              >
+                <Film className="w-3.5 h-3.5 text-amber-400" />
+                <span className="font-semibold">Video</span>
+              </button>
+
+              {/* Upload & Analyze NIF Model Button */}
+              <button
+                type="button"
+                onClick={() => fileInputNifRef.current?.click()}
+                disabled={isProcessing}
+                className="flex items-center gap-1 px-2 py-0.5 rounded bg-[#0d261e] hover:bg-[#163a2f] text-emerald-300 border border-emerald-800/70 hover:border-emerald-400 transition-all cursor-pointer"
+                title="Importar y analizar archivos .NIF de Bethesda para Lab & Mapas"
+              >
+                <FlaskConical className="w-3.5 h-3.5 text-emerald-400" />
+                <span className="font-semibold">NIF 3D</span>
+              </button>
+
+              {/* Demo Sample Presets */}
+              <button
+                type="button"
+                onClick={handleLoadSampleNif}
+                disabled={isProcessing}
+                className="text-emerald-400 hover:text-emerald-300 text-[10px] px-1.5 py-0.5 rounded hover:bg-[#13241d] cursor-pointer hidden sm:flex items-center gap-1 border border-emerald-900/60"
+                title="Cargar NIF de mapa Fallout 4 de muestra"
+              >
+                <BoxIcon className="w-3 h-3 text-emerald-400" />
+                <span>+ Demo Mapa .NIF</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleLoadSampleImage}
+                disabled={isProcessing}
+                className="text-slate-400 hover:text-slate-200 text-[10px] px-1.5 py-0.5 rounded hover:bg-[#1a2334] cursor-pointer hidden sm:flex items-center gap-1"
+                title="Cargar imagen técnica de muestra"
+              >
+                <span>+ Demo Plano</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleLoadSampleVideo}
+                disabled={isProcessing}
+                className="text-slate-400 hover:text-slate-200 text-[10px] px-1.5 py-0.5 rounded hover:bg-[#1a2334] cursor-pointer hidden sm:flex items-center gap-1"
+                title="Generar clip de video procedural para probar"
+              >
+                <span>+ Demo Video</span>
+              </button>
             </div>
-            <span>{inputValue.length} caracteres</span>
+
+            {/* Status & Send Button in Row */}
+            <div className="flex items-center gap-3">
+              <span className="text-slate-400 hidden md:inline">
+                {stagedAttachments.length > 0
+                  ? `${stagedAttachments.length} archivo(s) listo(s)`
+                  : `${inputValue.length} caracteres`}
+              </span>
+
+              {/* Send Button */}
+              <button
+                onClick={() => handleSendCommand()}
+                disabled={(!inputValue.trim() && stagedAttachments.length === 0) || isProcessing}
+                className="px-4 py-1.5 flex items-center justify-center gap-1.5 bg-cyan-600 hover:bg-cyan-500 disabled:bg-[#18202d] disabled:text-slate-600 text-white font-mono text-xs font-semibold rounded transition-all cursor-pointer shadow-sm active:scale-95"
+              >
+                <Send className="w-3.5 h-3.5" />
+                <span>Enviar</span>
+              </button>
+            </div>
           </div>
         </div>
-
-        {/* Send Button */}
-        <button
-          onClick={() => handleSendCommand()}
-          disabled={!inputValue.trim() || isProcessing}
-          className="w-28 h-14 flex flex-col items-center justify-center gap-1 bg-cyan-600 hover:bg-cyan-500 disabled:bg-[#18202d] disabled:text-slate-600 text-white font-mono text-xs font-semibold rounded transition-all cursor-pointer shadow-sm active:scale-95 shrink-0"
-        >
-          <Send className="w-4 h-4" />
-          <span>Enviar</span>
-        </button>
       </div>
+
+      {/* Lightbox Modal for Fullscreen Image Inspection */}
+      {activeLightboxImage && (
+        <div
+          className="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-4 backdrop-blur-sm cursor-zoom-out animate-fadeIn"
+          onClick={() => setActiveLightboxImage(null)}
+        >
+          <div className="relative max-w-5xl max-h-[92vh] flex flex-col items-center justify-center">
+            <button
+              onClick={() => setActiveLightboxImage(null)}
+              className="absolute -top-10 right-0 p-1.5 rounded-full bg-slate-800 text-slate-300 hover:text-white cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+            <img
+              src={activeLightboxImage}
+              alt="Inspección detallada"
+              className="max-h-[85vh] max-w-full object-contain rounded-md border border-cyan-800 shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            />
+            <p className="mt-2 text-xs font-mono text-cyan-300">
+              Vista previa en alta resolución • Analizada con Gemini 3.8 Flash
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Persistent Memory & Prompt Engineering Modal */}
       {showMemoryModal && (

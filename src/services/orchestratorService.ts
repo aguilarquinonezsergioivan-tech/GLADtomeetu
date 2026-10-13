@@ -1,4 +1,4 @@
-import { ChatMessage, ProjectPreset } from '../types/glados';
+import { ChatMessage, ProjectPreset, ChatMediaAttachment } from '../types/glados';
 import { loggerService } from './loggerService';
 import { parseNifFile } from './nifService';
 import { generateDxfString, DEFAULT_CAD_PARAMS } from './cadService';
@@ -39,16 +39,21 @@ export class OrchestratorService {
   public async processUserInput(
     text: string,
     history: ChatMessage[],
-    onUpdate: UICallback
+    onUpdate: UICallback,
+    attachments?: ChatMediaAttachment[]
   ): Promise<void> {
     const userMsg: ChatMessage = {
       id: `${Date.now()}-user`,
       role: 'user',
       content: text,
+      attachments: attachments && attachments.length > 0 ? attachments : undefined,
       timestamp: new Date().toTimeString().split(' ')[0],
     };
     onUpdate(userMsg);
-    loggerService.log('COMMAND', `Comando de usuario: "${text}"`);
+    loggerService.log(
+      'COMMAND',
+      `Comando de usuario: "${text}" ${attachments?.length ? `[${attachments.length} archivos multimedia adjuntos]` : ''}`
+    );
 
     await this.runAgenticLoop(text, history.concat(userMsg), onUpdate, 0);
   }
@@ -98,21 +103,75 @@ Tu misión es actuar como una IA completa de primer nivel:
       persistentMemoryService.buildMemoryPromptInjection(_originalUserPrompt);
 
     let aiResponseText = '';
+    const streamingMsgId = `${Date.now()}-assistant`;
+    let hasStreamedToUI = false;
 
     try {
+      const payloadMessages = history.map((m) => ({
+        role: m.role,
+        content: m.content,
+        attachments: m.attachments?.map((a) => ({
+          name: a.name,
+          type: a.type,
+          mimeType: a.mimeType,
+          data: a.base64Data || (a.dataUrl.includes('base64,') ? a.dataUrl.split('base64,')[1] : ''),
+        })),
+      }));
+
       const res = await fetch('/api/ai/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          messages: history.map((m) => ({ role: m.role, content: m.content })),
+          messages: payloadMessages,
           provider: this.currentProvider,
           systemPrompt: toolContract,
+          stream: true,
         }),
       });
 
-      if (res.ok) {
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('text/event-stream') && res.body) {
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder('utf-8');
+        let accumulated = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          const chunkStr = decoder.decode(value, { stream: true });
+          const lines = chunkStr.split('\n');
+
+          for (const line of lines) {
+            const trimmedLine = line.trim();
+            if (trimmedLine.startsWith('data: ')) {
+              const dataContent = trimmedLine.slice(6).trim();
+              if (dataContent === '[DONE]') break;
+              try {
+                const parsed = JSON.parse(dataContent);
+                if (parsed.text) {
+                  accumulated += parsed.text;
+
+                  // Only show live stream if it's not a raw MCP tool JSON call
+                  if (!accumulated.trim().startsWith('{"tool"')) {
+                    hasStreamedToUI = true;
+                    onUpdate({
+                      id: streamingMsgId,
+                      role: 'assistant',
+                      content: accumulated,
+                      timestamp: new Date().toTimeString().split(' ')[0],
+                    });
+                  }
+                }
+              } catch {
+                // Ignore parse chunk hiccups
+              }
+            }
+          }
+        }
+        aiResponseText = accumulated;
+      } else if (res.ok) {
         const data = await res.json();
-        aiResponseText = data.content;
+        aiResponseText = data.content || '';
       }
     } catch {
       // Handled in fallback
@@ -120,7 +179,8 @@ Tu misión es actuar como una IA completa de primer nivel:
 
     // Fallback heuristic if local API is unreachable or returned empty error
     if (!aiResponseText || aiResponseText.includes('[ERROR')) {
-      const lastUserMsg = history[history.length - 1]?.content || '';
+      const lastMsg = history[history.length - 1];
+      const lastUserMsg = lastMsg?.content || '';
       const toolCheck = detectAgenticToolIntent(lastUserMsg);
 
       if (toolCheck.isTool && toolCheck.tool) {
@@ -227,9 +287,9 @@ Tu misión es actuar como una IA completa de primer nivel:
       }
     }
 
-    // Final GLaDOS synthesis response
+    // Final GLaDOS synthesis response (if already streamed, finalize; otherwise dispatch)
     const finalMsg: ChatMessage = {
-      id: `${Date.now()}-assistant`,
+      id: streamingMsgId,
       role: 'assistant',
       content: aiResponseText,
       timestamp: new Date().toTimeString().split(' ')[0],

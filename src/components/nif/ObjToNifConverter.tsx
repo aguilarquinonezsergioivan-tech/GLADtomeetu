@@ -16,6 +16,11 @@ import {
   Sliders,
   Play,
   RotateCcw,
+  Trash2,
+  Plus,
+  FileCode,
+  FileUp,
+  AlertTriangle,
 } from 'lucide-react';
 import {
   AssetCategory,
@@ -26,8 +31,6 @@ import {
   NifConversionResult,
 } from '../../types/nifImporter';
 import {
-  BUILTIN_PRESET_MODELS,
-  BuiltinPresetModel,
   parseObjFile,
   parseFbxText,
 } from '../../services/meshImporterService';
@@ -43,6 +46,16 @@ import {
 import { NifParseResult } from '../../types/glados';
 import { loggerService } from '../../services/loggerService';
 
+export interface UserAddedModel {
+  id: string;
+  name: string;
+  format: 'obj' | 'fbx';
+  sizeBytes: number;
+  content: string;
+  parsedMesh: ImportedMeshData;
+  addedAt: string;
+}
+
 interface ObjToNifConverterProps {
   onConversionSuccess: (result: {
     conversionResult: NifConversionResult;
@@ -55,10 +68,15 @@ export const ObjToNifConverter: React.FC<ObjToNifConverterProps> = ({
   onConversionSuccess,
   onOpenInNifSkope,
 }) => {
-  // Selected source
-  const [selectedPresetId, setSelectedPresetId] = useState<string>('weapon-sword');
-  const [customFileContent, setCustomFileContent] = useState<string | null>(null);
-  const [customFileName, setCustomFileName] = useState<string | null>(null);
+  // User uploaded models (NO PRESETS - pure user added models)
+  const [userModels, setUserModels] = useState<UserAddedModel[]>([]);
+  const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
+
+  // Paste OBJ text modal
+  const [showPasteModal, setShowPasteModal] = useState<boolean>(false);
+  const [pasteName, setPasteName] = useState<string>('MiModelo3D.obj');
+  const [pasteContent, setPasteContent] = useState<string>('');
+  const [isDragging, setIsDragging] = useState<boolean>(false);
 
   // Asset Category
   const [category, setCategory] = useState<AssetCategory>('weapons_props');
@@ -82,76 +100,150 @@ export const ObjToNifConverter: React.FC<ObjToNifConverterProps> = ({
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
-    setTimeout(() => setToastMessage(null), 3000);
+    setTimeout(() => setToastMessage(null), 3500);
   };
 
-  // Switch preset
-  const handleSelectPreset = (preset: BuiltinPresetModel) => {
-    setSelectedPresetId(preset.id);
-    setCustomFileContent(null);
-    setCustomFileName(null);
-    setCategory(preset.category);
-    setHavokMaterial(preset.recommendedMaterial);
-    if (preset.category === 'weapons_props') {
-      setMassKg(3.2);
-    } else if (preset.category === 'clothing_armor') {
-      setMassKg(12.5);
-    } else {
-      setMassKg(0);
+  const activeModel = userModels.find((m) => m.id === selectedModelId) || userModels[0] || null;
+
+  // Process and add a new user model
+  const addModelFromText = (name: string, content: string, sizeBytes: number) => {
+    try {
+      const isFbx = name.toLowerCase().endsWith('.fbx');
+      const parsedMesh = isFbx
+        ? parseFbxText(content, name)
+        : parseObjFile(content, name);
+
+      if (parsedMesh.vertices.length === 0) {
+        showToast('⚠ El archivo no contenía vértices 3D válidos.');
+        return;
+      }
+
+      const newModel: UserAddedModel = {
+        id: `model-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+        name,
+        format: isFbx ? 'fbx' : 'obj',
+        sizeBytes,
+        content,
+        parsedMesh,
+        addedAt: new Date().toLocaleTimeString(),
+      };
+
+      setUserModels((prev) => [newModel, ...prev]);
+      setSelectedModelId(newModel.id);
+
+      // Heuristic auto-category detection
+      const lower = name.toLowerCase();
+      if (
+        lower.includes('armor') ||
+        lower.includes('helmet') ||
+        lower.includes('cuirass') ||
+        lower.includes('clothes') ||
+        lower.includes('ropa') ||
+        lower.includes('body')
+      ) {
+        setCategory('clothing_armor');
+        setHavokMaterial('HAV_MAT_FLESH');
+      } else if (
+        lower.includes('sword') ||
+        lower.includes('gun') ||
+        lower.includes('rifle') ||
+        lower.includes('weapon') ||
+        lower.includes('espada') ||
+        lower.includes('pistol')
+      ) {
+        setCategory('weapons_props');
+        setHavokMaterial('HAV_MAT_METAL');
+      } else if (
+        lower.includes('bunker') ||
+        lower.includes('wall') ||
+        lower.includes('floor') ||
+        lower.includes('building') ||
+        lower.includes('chunk') ||
+        lower.includes('map')
+      ) {
+        setCategory('maps_statics');
+        setHavokMaterial('HAV_MAT_CONCRETE');
+        setMassKg(0);
+      }
+
+      loggerService.log(
+        'COMMAND',
+        `[3D Import]: Agregado modelo '${name}' (${parsedMesh.vertices.length} verts, ${parsedMesh.faces.length} caras).`
+      );
+      showToast(`✓ Modelo '${name}' agregado (${parsedMesh.vertices.length} vértices)`);
+    } catch (err: unknown) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      showToast(`❌ Error al procesar archivo: ${errorMsg}`);
     }
-    showToast(`✓ Modelo preset cargado: ${preset.name}`);
   };
 
   // Upload local file (OBJ or FBX)
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
 
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const text = event.target?.result as string;
-      setCustomFileContent(text);
-      setCustomFileName(file.name);
-      setSelectedPresetId('');
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const text = event.target?.result as string;
+        addModelFromText(file.name, text, file.size);
+      };
+      reader.readAsText(file);
+    }
+    e.target.value = '';
+  };
 
-      // Auto-detect category from file name
-      const lower = file.name.toLowerCase();
-      if (lower.includes('armor') || lower.includes('helmet') || lower.includes('cuirass') || lower.includes('clothes') || lower.includes('body')) {
-        setCategory('clothing_armor');
-        setHavokMaterial('HAV_MAT_FLESH');
-      } else if (lower.includes('sword') || lower.includes('gun') || lower.includes('rifle') || lower.includes('weapon') || lower.includes('knife')) {
-        setCategory('weapons_props');
-        setHavokMaterial('HAV_MAT_METAL');
-      } else if (lower.includes('bunker') || lower.includes('wall') || lower.includes('floor') || lower.includes('chunk') || lower.includes('building')) {
-        setCategory('maps_statics');
-        setHavokMaterial('HAV_MAT_CONCRETE');
-      }
+  // Drag and Drop
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
 
-      loggerService.log('COMMAND', `Archivo 3D importado para conversión NIF: ${file.name}`);
-      showToast(`✓ Archivo '${file.name}' cargado (${(file.size / 1024).toFixed(1)} KB)`);
-    };
-    reader.readAsText(file);
+  const handleDragLeave = () => {
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const files = e.dataTransfer.files;
+    if (!files || files.length === 0) return;
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const text = event.target?.result as string;
+        addModelFromText(file.name, text, file.size);
+      };
+      reader.readAsText(file);
+    }
+  };
+
+  // Delete an added model
+  const handleDeleteModel = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setUserModels((prev) => prev.filter((m) => m.id !== id));
+    if (selectedModelId === id) {
+      const remaining = userModels.filter((m) => m.id !== id);
+      setSelectedModelId(remaining.length > 0 ? remaining[0].id : null);
+    }
+    showToast('✓ Modelo eliminado de la lista');
   };
 
   // Execute Conversion
   const handleRunConversion = () => {
+    if (!activeModel) {
+      showToast('⚠ Primero debes agregar o seleccionar un archivo .OBJ o .FBX.');
+      return;
+    }
+
     setIsConverting(true);
 
     setTimeout(() => {
       try {
-        let mesh: ImportedMeshData;
-        const meshName = customFileName || BUILTIN_PRESET_MODELS[selectedPresetId]?.name || 'ImportedMesh';
-
-        if (customFileContent) {
-          if (customFileName?.toLowerCase().endsWith('.fbx')) {
-            mesh = parseFbxText(customFileContent, meshName);
-          } else {
-            mesh = parseObjFile(customFileContent, meshName);
-          }
-        } else {
-          const preset = BUILTIN_PRESET_MODELS[selectedPresetId] || BUILTIN_PRESET_MODELS['weapon-sword'];
-          mesh = parseObjFile(preset.objData, preset.name);
-        }
+        const mesh = activeModel.parsedMesh;
 
         // Configure Havok
         const baseConfig = getDefaultCollisionConfig(category, mesh);
@@ -184,9 +276,9 @@ export const ObjToNifConverter: React.FC<ObjToNifConverterProps> = ({
 
         loggerService.log(
           'INFO',
-          `Conversión OBJ/FBX a NIF exitosa: ${nifParseResult.fileName} (${nifParseResult.blocks.length} bloques, ${nifParseResult.totalVertices} vértices).`
+          `Conversión OBJ/FBX a NIF exitosa: ${nifParseResult.fileName} (${nifParseResult.blocks.length} bloques, ${nifParseResult.totalVertices} vértices reales).`
         );
-        showToast('✓ Conversión a NIF Bethesda completada con éxito');
+        showToast('✓ Conversión a NIF Bethesda completada. Abriendo visor 3D...');
 
         onConversionSuccess({ conversionResult, nifParseResult });
       } catch (err: unknown) {
@@ -200,6 +292,77 @@ export const ObjToNifConverter: React.FC<ObjToNifConverterProps> = ({
 
   return (
     <div className="w-full h-full p-3 grid grid-cols-12 gap-3 overflow-y-auto text-slate-200 bg-[#080b10] font-mono select-none">
+      {/* Toast Notification */}
+      {toastMessage && (
+        <div className="fixed top-12 right-6 z-50 bg-[#121c2b] border border-cyan-500/80 text-cyan-200 px-3 py-1.5 rounded shadow-lg text-xs font-bold animate-fade-in">
+          {toastMessage}
+        </div>
+      )}
+
+      {/* Paste OBJ Modal */}
+      {showPasteModal && (
+        <div className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4">
+          <div className="bg-[#0f1420] border border-[#233148] rounded-lg max-w-xl w-full p-4 space-y-3 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-[#1c2738] pb-2">
+              <h4 className="text-xs font-bold text-cyan-300 flex items-center gap-1.5">
+                <FileCode className="w-4 h-4 text-cyan-400" />
+                <span>Pegar Código / Geometría Wavefront OBJ</span>
+              </h4>
+              <button
+                onClick={() => setShowPasteModal(false)}
+                className="text-slate-400 hover:text-slate-200 text-xs cursor-pointer"
+              >
+                ✕ Cerrar
+              </button>
+            </div>
+
+            <div>
+              <label className="text-[10px] text-slate-400 block mb-1">Nombre del Archivo:</label>
+              <input
+                type="text"
+                value={pasteName}
+                onChange={(e) => setPasteName(e.target.value)}
+                className="w-full bg-[#141b27] border border-[#233148] rounded px-2.5 py-1 text-xs text-slate-200"
+              />
+            </div>
+
+            <div>
+              <label className="text-[10px] text-slate-400 block mb-1">Contenido OBJ (vértices 'v', caras 'f'):</label>
+              <textarea
+                value={pasteContent}
+                onChange={(e) => setPasteContent(e.target.value)}
+                rows={10}
+                placeholder={"v 0.0 0.0 0.0\nv 10.0 0.0 0.0\nv 5.0 10.0 0.0\nf 1 2 3"}
+                className="w-full bg-[#141b27] border border-[#233148] rounded p-2 text-xs font-mono text-slate-300 focus:outline-hidden"
+              />
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-[#1c2738]">
+              <button
+                onClick={() => setShowPasteModal(false)}
+                className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-xs cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={() => {
+                  if (!pasteContent.trim()) {
+                    showToast('⚠ El texto pegado está vacío.');
+                    return;
+                  }
+                  addModelFromText(pasteName, pasteContent, pasteContent.length);
+                  setShowPasteModal(false);
+                  setPasteContent('');
+                }}
+                className="px-3 py-1 bg-cyan-700 hover:bg-cyan-600 text-white rounded text-xs font-bold cursor-pointer"
+              >
+                Agregar Modelo
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* LEFT COLUMN: Input Selection & Category Picker (Cols 6) */}
       <div className="col-span-12 lg:col-span-6 flex flex-col space-y-3">
         {/* Banner */}
@@ -214,87 +377,135 @@ export const ObjToNifConverter: React.FC<ObjToNifConverterProps> = ({
             </span>
           </div>
           <p className="text-[11px] text-slate-400 leading-relaxed">
-            Convierte modelos 3D directamente a archivos <code className="text-cyan-300">.nif</code> y <code className="text-amber-300">.bgsm</code> con tangentes automáticas y generación de colisiones Havok precisas para armas, ropa o mapas.
+            Importa tus propios modelos 3D y conviértelos directamente en archivos <code className="text-cyan-300">.nif</code> y <code className="text-amber-300">.bgsm</code> con colisiones Havok calculadas exactamente según el tipo de asset (ropa/armadura, armas o mapas).
           </p>
         </div>
 
-        {/* 1. Selector de Modelo 3D */}
-        <div className="bg-[#0b0f17] border border-[#192233] p-3 rounded-md space-y-2">
-          <div className="flex items-center justify-between">
+        {/* 1. Selector de Modelo 3D (100% User Added - No Pre-established Models) */}
+        <div className="bg-[#0b0f17] border border-[#192233] p-3 rounded-md space-y-3">
+          <div className="flex items-center justify-between flex-wrap gap-2">
             <span className="text-[11px] font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1">
               <Box className="w-3.5 h-3.5 text-cyan-400" />
               <span>1. Modelo 3D de Origen (OBJ / FBX)</span>
             </span>
-            <label className="flex items-center gap-1 px-2.5 py-0.5 bg-emerald-800 hover:bg-emerald-700 text-white rounded text-[11px] font-semibold cursor-pointer transition-colors shadow-xs active:scale-95">
-              <Upload className="w-3 h-3" />
-              <span>Subir OBJ/FBX Propio</span>
-              <input
-                type="file"
-                accept=".obj,.fbx,.txt"
-                onChange={handleFileUpload}
-                className="hidden"
-              />
-            </label>
+
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setShowPasteModal(true)}
+                className="px-2 py-1 bg-[#141d2a] hover:bg-[#1e2a3c] text-slate-300 rounded text-[10.5px] border border-[#223145] flex items-center gap-1 cursor-pointer transition-colors"
+                title="Pegar código OBJ crudo directamente"
+              >
+                <FileCode className="w-3 h-3 text-cyan-400" />
+                <span>Pegar OBJ</span>
+              </button>
+
+              <label className="flex items-center gap-1 px-2.5 py-1 bg-emerald-800 hover:bg-emerald-700 text-white rounded text-[11px] font-semibold cursor-pointer transition-colors shadow-xs active:scale-95">
+                <Upload className="w-3.5 h-3.5" />
+                <span>+ Cargar Modelo Propio</span>
+                <input
+                  type="file"
+                  multiple
+                  accept=".obj,.fbx,.txt"
+                  onChange={handleFileInput}
+                  className="hidden"
+                />
+              </label>
+            </div>
           </div>
 
-          {customFileName && (
-            <div className="p-2 bg-emerald-950/50 border border-emerald-700/60 rounded text-[11px] text-emerald-200 flex items-center justify-between">
-              <span>Archivo Local Cargado: <strong>{customFileName}</strong></span>
-              <button
-                onClick={() => {
-                  setCustomFileContent(null);
-                  setCustomFileName(null);
-                  setSelectedPresetId('weapon-sword');
-                }}
-                className="text-xs text-rose-400 hover:text-rose-300 underline cursor-pointer"
-              >
-                Volver a Presets
-              </button>
+          {/* Drag & Drop Zone */}
+          <div
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+            className={`border-2 border-dashed rounded-md p-4 text-center transition-all ${
+              isDragging
+                ? 'border-cyan-400 bg-cyan-950/40 text-cyan-200 scale-[1.01]'
+                : userModels.length === 0
+                ? 'border-[#263750] bg-[#0d121c] text-slate-400 hover:border-cyan-600/70'
+                : 'border-[#1b2535] bg-[#0c1017] text-slate-400'
+            }`}
+          >
+            <div className="flex flex-col items-center justify-center space-y-1.5">
+              <FileUp className={`w-6 h-6 ${isDragging ? 'text-cyan-300 animate-bounce' : 'text-slate-500'}`} />
+              <p className="text-xs font-semibold text-slate-300">
+                Arrastra y suelta tu archivo <strong>.OBJ</strong> o <strong>.FBX</strong> aquí
+              </p>
+              <p className="text-[10px] text-slate-500">
+                Sin modelos preestablecidos. Todo se genera a partir de los archivos que tú agregues.
+              </p>
+            </div>
+          </div>
+
+          {/* List of User Added Models */}
+          {userModels.length > 0 && (
+            <div className="space-y-1.5">
+              <span className="text-[10px] text-slate-400 uppercase tracking-wider block">
+                Modelos 3D que has agregado ({userModels.length}):
+              </span>
+              <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+                {userModels.map((model) => {
+                  const isSelected = activeModel?.id === model.id;
+                  const bounds = model.parsedMesh.bounds;
+                  const width = (bounds.max[0] - bounds.min[0]).toFixed(1);
+                  const depth = (bounds.max[1] - bounds.min[1]).toFixed(1);
+                  const height = (bounds.max[2] - bounds.min[2]).toFixed(1);
+
+                  return (
+                    <div
+                      key={model.id}
+                      onClick={() => setSelectedModelId(model.id)}
+                      className={`p-2.5 rounded-md border text-left cursor-pointer transition-all flex items-center justify-between ${
+                        isSelected
+                          ? 'bg-cyan-950/70 border-cyan-500 shadow-md ring-1 ring-cyan-500/50 text-cyan-100'
+                          : 'bg-[#101522] border-[#1e283d] text-slate-400 hover:text-slate-200 hover:bg-[#151c2d]'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2.5 truncate">
+                        <div className={`w-7 h-7 rounded flex items-center justify-center shrink-0 ${
+                          isSelected ? 'bg-cyan-900/80 text-cyan-200' : 'bg-[#17202f] text-slate-400'
+                        }`}>
+                          <Box className="w-3.5 h-3.5" />
+                        </div>
+                        <div className="truncate">
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold text-xs text-slate-200 truncate">
+                              {model.name}
+                            </span>
+                            <span className="text-[9px] px-1.5 py-0.2 rounded bg-[#1c2738] text-cyan-300 uppercase">
+                              .{model.format}
+                            </span>
+                          </div>
+                          <p className="text-[9.5px] text-slate-400 mt-0.5">
+                            {model.parsedMesh.vertices.length.toLocaleString()} vértices &middot;{' '}
+                            {model.parsedMesh.faces.length.toLocaleString()} caras &middot; Dim: {width}×{depth}×{height}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 shrink-0 ml-2">
+                        {isSelected && (
+                          <span className="text-[9px] text-cyan-400 font-bold bg-cyan-950/90 border border-cyan-600/70 px-1.5 py-0.5 rounded">
+                            Activo
+                          </span>
+                        )}
+                        <button
+                          onClick={(e) => handleDeleteModel(model.id, e)}
+                          className="p-1 text-slate-500 hover:text-rose-400 hover:bg-rose-950/60 rounded transition-colors"
+                          title="Eliminar de la lista"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
-
-          {/* Preset Cards */}
-          <div className="grid grid-cols-3 gap-2">
-            {Object.values(BUILTIN_PRESET_MODELS).map((preset) => {
-              const isSelected = selectedPresetId === preset.id && !customFileName;
-              return (
-                <button
-                  key={preset.id}
-                  onClick={() => handleSelectPreset(preset)}
-                  className={`p-2.5 rounded-md border text-left cursor-pointer transition-all flex flex-col justify-between ${
-                    isSelected
-                      ? 'bg-cyan-950/70 border-cyan-500 shadow-md ring-1 ring-cyan-500/50 text-cyan-200'
-                      : 'bg-[#101522] border-[#1e283d] text-slate-400 hover:text-slate-200 hover:bg-[#151c2d]'
-                  }`}
-                >
-                  <div>
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-300">
-                        {preset.category === 'weapons_props'
-                          ? '🗡️ Arma'
-                          : preset.category === 'clothing_armor'
-                          ? '🛡️ Armadura'
-                          : '🏛️ Mapa/Estático'}
-                      </span>
-                      {isSelected && <CheckCircle2 className="w-3.5 h-3.5 text-cyan-400" />}
-                    </div>
-                    <p className="text-[11px] font-bold text-slate-100 leading-tight">
-                      {preset.name.split('(')[0]}
-                    </p>
-                    <p className="text-[9px] text-slate-500 mt-1 line-clamp-2">
-                      {preset.description}
-                    </p>
-                  </div>
-                  <span className="text-[9px] text-cyan-400/80 mt-2 block">
-                    Preset OBJ Listo
-                  </span>
-                </button>
-              );
-            })}
-          </div>
         </div>
 
-        {/* 2. Selector Especializado de Categoría (Crucial Bethesda Havok Rules) */}
+        {/* 2. Selector Especializado de Categoría (Bethesda Havok Rules) */}
         <div className="bg-[#0b0f17] border border-[#192233] p-3 rounded-md space-y-2">
           <span className="text-[11px] font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1">
             <Layers className="w-3.5 h-3.5 text-purple-400" />
@@ -529,8 +740,8 @@ export const ObjToNifConverter: React.FC<ObjToNifConverterProps> = ({
         <div className="bg-[#0b0f17] border border-[#192233] p-3 rounded-md space-y-2.5">
           <button
             onClick={handleRunConversion}
-            disabled={isConverting}
-            className="w-full py-2.5 bg-gradient-to-r from-cyan-600 via-emerald-600 to-cyan-600 hover:from-cyan-500 hover:to-emerald-500 text-white font-bold rounded-md text-xs transition-all shadow-md active:scale-[0.99] flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+            disabled={isConverting || !activeModel}
+            className="w-full py-2.5 bg-gradient-to-r from-cyan-600 via-emerald-600 to-cyan-600 hover:from-cyan-500 hover:to-emerald-500 text-white font-bold rounded-md text-xs transition-all shadow-md active:scale-[0.99] flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {isConverting ? (
               <>
@@ -540,10 +751,21 @@ export const ObjToNifConverter: React.FC<ObjToNifConverterProps> = ({
             ) : (
               <>
                 <Play className="w-4 h-4 text-cyan-200" />
-                <span>⚡ CONVERTIR A NIF BETHESDA &amp; CARGAR EN NIFSKOPE</span>
+                <span>
+                  {activeModel
+                    ? `⚡ CONVERTIR "${activeModel.name}" A NIF BETHESDA`
+                    : '⚡ SELECCIONA O SUBE UN MODELO PRIMERO'}
+                </span>
               </>
             )}
           </button>
+
+          {!activeModel && (
+            <p className="text-[10px] text-amber-400 text-center flex items-center justify-center gap-1">
+              <AlertTriangle className="w-3.5 h-3.5" />
+              <span>Sube un archivo .OBJ o .FBX en la sección izquierda para habilitar la conversión.</span>
+            </p>
+          )}
 
           {/* Diagnostics and direct download after conversion */}
           {lastConversion && (

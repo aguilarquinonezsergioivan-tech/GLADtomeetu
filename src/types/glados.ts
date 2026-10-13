@@ -42,11 +42,36 @@ export interface HardwareStats {
   isSimulated?: boolean;
 }
 
+export type AttachmentMediaType = 'image' | 'video' | 'nif';
+
+export interface ChatMediaAttachment {
+  id: string;
+  name: string;
+  type: AttachmentMediaType;
+  mimeType: string;
+  dataUrl: string;
+  base64Data?: string;
+  sizeBytes?: number;
+  durationSeconds?: number;
+  width?: number;
+  height?: number;
+  nifDiagnostic?: {
+    gameEngine: string;
+    totalVertices: number;
+    totalTriangles: number;
+    hasHavokCollision: boolean;
+    importScore: number;
+    isReadyForMaps: boolean;
+    recommendations: string[];
+  };
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp: string;
+  attachments?: ChatMediaAttachment[];
   isAgenticProcess?: boolean;
   toolCall?: {
     tool: string;

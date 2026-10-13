@@ -130,6 +130,7 @@ python main.py
             <ChatPanel
               orchestrator={orchestrator}
               activeProject={activeProject}
+              onNavigateToPanel={handleSelectPanel}
             />
           )}
 

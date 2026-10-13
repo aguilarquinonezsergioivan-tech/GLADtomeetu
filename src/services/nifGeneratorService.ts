@@ -70,13 +70,20 @@ export function buildBinaryNifBuffer(
   view.setFloat32(offset, mesh.bounds.max[1], true); offset += 4;
   view.setFloat32(offset, mesh.bounds.max[2], true); offset += 4;
 
-  // Write first sample vertices
-  const sampleVertCount = Math.min(mesh.vertices.length, 128);
-  for (let i = 0; i < sampleVertCount; i++) {
+  // Write all vertices
+  for (let i = 0; i < mesh.vertices.length; i++) {
     const v = mesh.vertices[i];
     view.setFloat32(offset, v.x, true); offset += 4;
     view.setFloat32(offset, v.y, true); offset += 4;
     view.setFloat32(offset, v.z, true); offset += 4;
+  }
+
+  // Write all faces (3x uint16 per triangle)
+  for (let i = 0; i < mesh.faces.length; i++) {
+    const f = mesh.faces[i];
+    view.setUint16(offset, f.a, true); offset += 2;
+    view.setUint16(offset, f.b, true); offset += 2;
+    view.setUint16(offset, f.c, true); offset += 2;
   }
 
   // Return sized view
